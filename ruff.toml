@@ -1,0 +1,14 @@
+target-version = "py311"
+line-length = 120
+
+[lint]
+select = ["ALL"]
+ignore = [
+    "N999",  # invalid module name (project uses CamelCase filenames like ShiftPlan.py)
+    "S101",  # use of assert (allowed in tests)
+    "D203",  # incompatible with D211 (chose D211: no blank line before class)
+    "D213",  # incompatible with D212 (chose D212: summary on first line)
+]
+
+[lint.per-file-ignores]
+"tests/**" = ["S101", "ANN", "D", "PLR2004"]
