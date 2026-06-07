@@ -158,7 +158,7 @@ The first commit will be `git mv` of cleaned cells from these notebooks into `li
 - `notebooks/01_heston_mcmc.ipynb` — Heston calibrated to a recent SPX snapshot, with all benchmark numbers
 - `lib/data/`, `lib/eval/`
 
-**Phase 1 exit criterion**: I can show a friend a plot of the SPX implied vol surface, the recovered marginals, and a table of Heston calibration metrics. Done.
+**Phase 1 exit criterion**: I can show a plot of the SPX implied vol surface, the recovered marginals, and a table of Heston calibration metrics. Done.
 
 #### Phase 2 — Flow matching neural SDE on SPX (~4-6 weeks)
 
@@ -192,8 +192,6 @@ The first commit will be `git mv` of cleaned cells from these notebooks into `li
 - **Blog post #1**: "Calibrating a neural SDE to the SPX option surface with flow matching." Aimed at quant Twitter and r/quantfinance.
 - README polish, ensure repo runs cleanly from clean clone.
 - Public announcement.
-
-**v1.0 success criterion**: a friend who works in quant can clone the repo, run the notebooks, and reproduce the benchmark numbers in under an hour. If yes, v1.0 ships. If no, fix it before announcing.
 
 ---
 
@@ -414,7 +412,6 @@ Pace targets, not deadlines. Hitting them within ±50% is fine; "consistency" is
 | **Scope creep** | Each release has explicit deliverables and a hard ship gate. v1.0 explicitly does NOT include SB, joint calibration, or crypto. |
 | **Compute cost** | $0.30/hr cloud GPU, bursty usage, total project budget $100-400. Bounded. |
 | **You publish and nobody finds it** | Three blog posts at v1.0, v2.0, v4.0 ship. Twitter/X threads. Email a draft to one senior person by v2.0 ship. Submit to ICAIF/NeurIPS workshop. |
-| **Friend collaboration falls apart** | Lock in division of labor in writing before starting. Define what success looks like for each person. Pre-commit to authorship/credit before code is written. |
 | **Burnout / loss of interest in 9 months** | The release structure means partial completion still has value. Stopping at v1.0 is fine. Stopping at v2.0 is great. Stopping at v3.0 is a publishable contribution. |
 
 ---
@@ -495,11 +492,6 @@ In priority order, this week:
 
 By end of week 1: repo exists, real data flowing, first real plots, foundation for Phase 1. This is more motivating than any amount of reading.
 
-**Collaboration with friend**: before going deep, draft a one-page agreement covering:
-- Who owns which slice of work (suggested: friend takes data infra + evaluation harness; you take math + neural SDE core)
-- What credit/authorship looks like at each release
-- What happens if one of you can't continue
-- Meeting cadence (weekly minimum)
 
 Lock this in before week 2.
 
