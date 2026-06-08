@@ -17,6 +17,7 @@ dependencies = [
     "yfinance>=0.2.40",    # free SPX option-chain ETL
     "polars>=1.0",         # primary DataFrame lib (time-series joins)
     "pandas>=2.2",         # interop only
+    "pyarrow>=16.0",
     "matplotlib>=3.8",     # static figures
     "altair>=5.3",         # interactive figures
 ]
