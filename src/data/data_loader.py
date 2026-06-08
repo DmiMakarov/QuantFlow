@@ -10,6 +10,10 @@ class DataLoader:
     def __init__(self) -> None:
         """Initialize the DataLoader."""
 
+    def load_pkl(self, file_path: str) -> pd.DataFrame:
+        """Load data from a pickle file."""
+        return pd.read_parquet(file_path)
+
     def load_csv(self, file_path: str) -> pd.DataFrame:
         """Load data from a CSV file."""
         return pd.read_csv(file_path)
@@ -30,11 +34,11 @@ class DataLoader:
         """Load SPX data, firstly trying to find in path."""
         if path is not None:
             try:
-                return self.load_csv(path)
+                return self.load_parquet(path)
             except:
                 pass
 
-        return self.load_yfinance(tickers="^GSPC", start=start, end=end, interval=interval)
+        return self.load_yfinance(tickers="^SPX", start=start, end=end, interval=interval)
 
     def load_option_chain(self, ticker: str = "^SPX", n_maturities: int = 5) -> pd.DataFrame:
         """Snapshot of the option chain for the nearest n_maturities expiries."""
@@ -51,5 +55,4 @@ class DataLoader:
                 frames.append(df)
 
         return pd.concat(frames, ignore_index=True)
-    
     
