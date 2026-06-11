@@ -3,7 +3,7 @@ from dataclasses import dataclass
 
 
 @dataclass
-class HestonParams():
+class HestonParams:
     """Risk-neutral Heston params.
 
     v_0 - initial variance
