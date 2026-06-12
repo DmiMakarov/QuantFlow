@@ -10,7 +10,7 @@ class DataLoader:
     def __init__(self) -> None:
         """Initialize the DataLoader."""
 
-    def load_pkl(self, file_path: str) -> pd.DataFrame:
+    def load_parquet(self, file_path: str) -> pd.DataFrame:
         """Load data from a pickle file."""
         return pd.read_parquet(file_path)
 
@@ -35,7 +35,7 @@ class DataLoader:
         if path is not None:
             try:
                 return self.load_parquet(path)
-            except:
+            except Exception:
                 pass
 
         return self.load_yfinance(tickers="^SPX", start=start, end=end, interval=interval)
@@ -55,4 +55,4 @@ class DataLoader:
                 frames.append(df)
 
         return pd.concat(frames, ignore_index=True)
-    
+
