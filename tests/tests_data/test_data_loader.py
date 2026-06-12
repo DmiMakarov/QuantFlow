@@ -12,10 +12,10 @@ def loader() -> DataLoader:
     return DataLoader()
 
 
-def test_load_pkl(loader: DataLoader, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_load_parquet(loader: DataLoader, monkeypatch: pytest.MonkeyPatch) -> None:
     sentinel = pd.DataFrame({"a": [1]})
     monkeypatch.setattr(data_loader.pd, "read_parquet", lambda p: sentinel)
-    assert loader.load_pkl("x.parquet") is sentinel
+    assert loader.load_parquet("x.parquet") is sentinel
 
 
 def test_load_csv(loader: DataLoader, monkeypatch: pytest.MonkeyPatch) -> None:
