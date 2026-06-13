@@ -1,5 +1,6 @@
 """A class for loading data from various sources, such as CSV files, databases, or APIs."""
 import pandas as pd
+import pyarrow.parquet as pq
 import requests
 import yfinance
 
@@ -12,7 +13,7 @@ class DataLoader:
 
     def load_parquet(self, file_path: str) -> pd.DataFrame:
         """Load data from a pickle file."""
-        return pd.read_parquet(file_path)
+        return pq.read_table(file_path).replace_schema_metadata(None).to_pandas()
 
     def load_csv(self, file_path: str) -> pd.DataFrame:
         """Load data from a CSV file."""

@@ -11,7 +11,6 @@ import numpy as np
 import numpyro
 import numpyro.distributions as dist
 from numpyro.infer import MCMC, NUTS, init_to_value
-from scipy.integrate import quad_vec
 from scipy.optimize import brentq, least_squares
 from scipy.stats import norm
 
@@ -21,8 +20,14 @@ jax.config.update("jax_enable_x64", True)
 
 logger = getLogger()
 
-class HestonAnalytics:
+class HestonModel:
     """Heston model implementation with analytical solution."""
+
+    # Default fixed Gauss-Legendre grid for the public pricer. The JAX pricer
+    # is the single source of truth for both `characteristic_function` and
+    # `call`; these set the [0, u_max] quadrature resolution used to invert it.
+    _U_MAX: float = 200.0
+    _N_QUAD: int = 128
 
     def __init__(self,
                  init_params: HestonParams) -> None:
@@ -40,13 +45,18 @@ class HestonAnalytics:
 
         self.params = init_params
 
+    @staticmethod
+    def _pack(params: HestonParams) -> jnp.ndarray:
+        """Pack HestonParams into the [v_0, v_mean, a, eta, rho] vector the JAX core expects."""
+        return jnp.asarray([params.v_0, params.v_mean, params.a, params.eta, params.rho])
+
     def characteristic_function(self,
                                 s_0: float,
                                 r: float,
                                 t: float | np.ndarray,
                                 w: float | np.ndarray,
-                                params: HestonParams | None) -> complex | np.ndarray:
-        """Calculate Heston characteristic function.
+                                params: HestonParams | None = None) -> complex | np.ndarray:
+        """Evaluate the Heston characteristic function (numpy-facing wrapper over `_cf_jax`).
 
         s_0 - initial price
         r - risk-free rate
@@ -54,98 +64,35 @@ class HestonAnalytics:
         w - points at which to evaluate the function
         """
         params = params if params is not None else self.params
+        cf = self._cf_jax(self._pack(params), s_0, r, jnp.asarray(t), jnp.asarray(w))
 
-        alpha = - (w * w + 1j * w) / 2
-        beta = params.a - params.rho * params.eta * 1j * w
-        gamma = params.eta * params.eta / 2
-        h = np.sqrt(beta * beta - 4 * alpha * gamma)
-        g = (beta - h) / (beta + h)
-        r_ = (beta - h) / params.eta / params.eta
-        D_tw = r_ * (1 - np.exp(-h  *t)) / (1 - g * np.exp(- h * t))
-        C_tw = params.a * (r_ * t - 2 * np.log((1 - g * np.exp(-h * t)) / (1 - g)) / params.eta / params.eta)
-
-        return np.exp(C_tw * params.v_mean + D_tw * params.v_0 + 1j * w * np.log(s_0 * np.exp(r * t)))
-
-    def _pi1(self,
-             k: float | np.ndarray,
-             s_0: float,
-             r: float,
-             t: float | np.ndarray,
-             params: HestonParams | None = None) -> float:
-        """Calculate pi1.
-
-        k - strike
-        s_0 - initial price
-        r - risk-free rate
-        t - time/maturity
-        w - points at which to evaluate the function
-        """
-        params = params if params is not None else self.params
-
-        def integrand(w: float) -> float:
-            """Define the function under integral."""
-            val = np.exp(-1j * w * np.log(k))
-            val *= self.characteristic_function(s_0, r, t, w - 1j, params)
-            val /= 1j * w * self.characteristic_function(s_0, r, t, - 1j, params)
-
-            return val.real
-
-        integral, _err = quad_vec(integrand, 0, np.inf, limit=1000)
-
-        return 0.5 + integral / np.pi
-
-    def _pi2(self,
-             k: float | np.ndarray,
-             s_0: float,
-             r: float,
-             t: float | np.ndarray,
-             params: HestonParams | None = None) -> float:
-        """Calculate pi2.
-
-        K - strike
-        s_0 - initial price
-        r - risk-free rate
-        t - time/maturity
-        w - points at which to evaluate the function
-        """
-        params = params if params is not None else self.params
-
-        def integrand(w: float) -> float:
-            """Define the function under integral."""
-            val = np.exp(-1j * w * np.log(k))
-            val *= self.characteristic_function(s_0, r, t, w, params)
-            val /= 1j * w
-
-            return val.real
-
-        integral, _err = quad_vec(integrand, 0, np.inf, limit=1000)
-
-        return 0.5 + integral / np.pi
+        return np.asarray(cf)
 
     def call(self,
              k: float | np.ndarray,
              s_0: float,
              r: float,
              t: float | np.ndarray,
-             params: HestonParams | None = None) -> float | np.ndarray:
-        """Compute call price.
+             params: HestonParams | None = None) -> np.ndarray:
+        """Compute call prices (numpy-facing wrapper over the JAX pricer `_call_jax`).
 
-        Call price = S_0 * Pi_1 - e^{-rT} K Pi_2
+        Inverts the characteristic function via fixed Gauss-Legendre quadrature on
+        [0, _U_MAX]; k, t are parallel quote arrays.
+
         K - strike
         s_0 - initial price
         r - risk-free rate
         t - time/maturity
-        w - points at which to evaluate the function
         """
         params = params if params is not None else self.params
+        nodes, weights = self._gauss_legendre(self._U_MAX, self._N_QUAD)
+        prices = self._call_jax(self._pack(params), jnp.atleast_1d(jnp.asarray(k)),
+                                s_0, r, jnp.atleast_1d(jnp.asarray(t)), nodes, weights)
 
-        pi1: float | np.ndarray = self._pi1(k, s_0, r, t, params)
-        pi2: float | np.ndarray = self._pi2(k, s_0, r, t, params)
-
-        return s_0 * pi1 - np.exp(-r * t) * k * pi2
+        return np.asarray(prices)
 
     def put(self,
-            k: float,
+            k: float | np.ndarray,
             s_0: float,
             r: float,
             t: float | np.ndarray,
@@ -156,7 +103,7 @@ class HestonAnalytics:
         return self.call(k=k, s_0=s_0, r=r, t=t, params=params) - s_0 + k * np.exp(-r * t)
 
     def optimize_params(self,
-            k: float,
+            k: float | np.ndarray,
             s_0: float,
             r: float,
             t: float | np.ndarray,
@@ -433,7 +380,7 @@ class HestonAnalytics:
                      "rho": init_params.rho, "sigma": 0.02}
         kernel = NUTS(model, init_strategy=init_to_value(values=init_vals))
         mcmc = MCMC(kernel, num_warmup=num_warmup, num_samples=num_samples,
-                    progress_bar=False)
+                    progress_bar=False, num_chains=4)
         mcmc.run(jax.random.PRNGKey(seed))
 
         self.posterior = mcmc.get_samples()
