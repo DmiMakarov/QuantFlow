@@ -41,19 +41,61 @@ class DataLoader:
 
         return self.load_yfinance(tickers="^SPX", start=start, end=end, interval=interval)
 
+    @staticmethod
+    def _underlying_snapshot(option_chain: object) -> tuple[float, pd.Timestamp]:
+        """Pull the spot and snapshot time from an option_chain().underlying dict.
+
+        Yahoo returns the underlying quote alongside every expiry; regularMarketPrice
+        is the spot (s_0) consistent with these quotes and regularMarketTime is the
+        epoch-second timestamp of the snapshot (the calibration valuation date).
+        """
+        underlying = option_chain.underlying or {}
+        spot = float(underlying["regularMarketPrice"])
+        snapshot_time = pd.to_datetime(underlying["regularMarketTime"], unit="s", utc=True)
+
+        return spot, snapshot_time
+
     def load_option_chain(self, ticker: str = "^SPX", n_maturities: int = 5) -> pd.DataFrame:
-        """Snapshot of the option chain for the nearest n_maturities expiries."""
+        """Snapshot of the option chain for the nearest n_maturities expiries.
+
+        Each row carries the spot and snapshot time captured atomically from Yahoo's
+        underlying quote, plus time-to-maturity in years. This makes the frame fully
+        self-contained for calibration: s_0, the valuation date, and t all live here,
+        with no dependency on a separate price file.
+        """
         tk = yfinance.Ticker(ticker)
         expiries = tk.options[:n_maturities]
+
+        spot: float | None = None
+        snapshot_time: pd.Timestamp | None = None
 
         frames = []
         for expiry in expiries:
             oc = tk.option_chain(expiry)
-            for kind, df in (("call", oc.calls), ("put", oc.puts)):
-                df: pd.DataFrame = df.copy()
-                df["expiry"] = expiry
-                df["type"] = kind
-                frames.append(df)
+            if spot is None:
+                spot, snapshot_time = self._underlying_snapshot(oc)
+            for kind, side in (("call", oc.calls), ("put", oc.puts)):
+                labelled = side.copy()
+                labelled["expiry"] = expiry
+                labelled["type"] = kind
+                frames.append(labelled)
 
-        return pd.concat(frames, ignore_index=True)
+        chain = pd.concat(frames, ignore_index=True)
+        chain["spot"] = spot
+        chain["snapshot_time"] = snapshot_time
+        # time to maturity in years, measured from the snapshot (not "today")
+        ttm_days = (pd.to_datetime(chain["expiry"], utc=True) - snapshot_time).dt.total_seconds()
+        chain["ttm"] = ttm_days / (365.0 * 24 * 3600)
+
+        return chain
+
+    @staticmethod
+    def save_parquet(df: pd.DataFrame, file_path: str) -> None:
+        """Write a DataFrame to parquet, preserving any DatetimeIndex as a column.
+
+        The price series carries its dates in the index; resetting it first means the
+        dates survive the round-trip instead of being dropped to a RangeIndex on save.
+        """
+        out = df.reset_index() if df.index.name or isinstance(df.index, pd.MultiIndex) else df
+        out.to_parquet(file_path, index=False)
 
