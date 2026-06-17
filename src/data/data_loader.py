@@ -1,4 +1,5 @@
 """A class for loading data from various sources, such as CSV files, databases, or APIs."""
+import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 import requests
@@ -55,16 +56,43 @@ class DataLoader:
 
         return spot, snapshot_time
 
-    def load_option_chain(self, ticker: str = "^SPX", n_maturities: int = 5) -> pd.DataFrame:
-        """Snapshot of the option chain for the nearest n_maturities expiries.
+    @staticmethod
+    def _select_maturity_ladder(expiries: tuple[str, ...], n_maturities: int,
+                                min_days: int, max_days: int) -> list[str]:
+        """Pick up to n_maturities expiries evenly spread across [min_days, max_days].
 
-        Each row carries the spot and snapshot time captured atomically from Yahoo's
-        underlying quote, plus time-to-maturity in years. This makes the frame fully
-        self-contained for calibration: s_0, the valuation date, and t all live here,
-        with no dependency on a separate price file.
+        yfinance returns ALL expiries sorted ascending, and for SPX the nearest dozen
+        are daily/weekly contracts clustered within ~2 weeks. A term-structure model
+        like Heston needs a spread of maturities (its mean-reversion speed and long-run
+        variance are only identifiable across time), so we filter to a sensible day
+        window and take a roughly even spread across it rather than the nearest N.
+        """
+        today = pd.Timestamp.now().normalize()
+        dated = [(e, (pd.Timestamp(e) - today).days) for e in expiries]
+        eligible = [e for e, d in dated if min_days <= d <= max_days]
+        if not eligible:                       # window too narrow -> fall back to all
+            eligible = [e for e, _ in dated]
+        if len(eligible) <= n_maturities:
+            return eligible
+        idx = np.linspace(0, len(eligible) - 1, n_maturities)
+        picks = sorted({int(round(i)) for i in idx})
+
+        return [eligible[i] for i in picks]
+
+    def load_option_chain(self, ticker: str = "^SPX", n_maturities: int = 8,
+                          min_days: int = 7, max_days: int = 400) -> pd.DataFrame:
+        """Snapshot of the option chain over a maturity ladder.
+
+        Selects up to n_maturities expiries spread across [min_days, max_days] (see
+        _select_maturity_ladder) instead of just the nearest ones, so the surface spans
+        enough time for term-structure calibration. Each row carries the spot and
+        snapshot time captured atomically from Yahoo's underlying quote, plus
+        time-to-maturity in years. This makes the frame fully self-contained for
+        calibration: s_0, the valuation date, and t all live here, with no dependency
+        on a separate price file.
         """
         tk = yfinance.Ticker(ticker)
-        expiries = tk.options[:n_maturities]
+        expiries = self._select_maturity_ladder(tk.options, n_maturities, min_days, max_days)
 
         spot: float | None = None
         snapshot_time: pd.Timestamp | None = None

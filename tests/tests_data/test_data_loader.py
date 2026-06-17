@@ -86,6 +86,9 @@ def test_load_option_chain(loader: DataLoader, monkeypatch: pytest.MonkeyPatch) 
         def __init__(self) -> None:
             self.calls = calls
             self.puts = puts
+            # underlying quote captured alongside every expiry (spot + snapshot epoch)
+            self.underlying = {"regularMarketPrice": 105.0,
+                               "regularMarketTime": 1_780_000_000}
 
     class FakeTicker:
         def __init__(self, ticker: str) -> None:
@@ -95,9 +98,14 @@ def test_load_option_chain(loader: DataLoader, monkeypatch: pytest.MonkeyPatch) 
             return FakeChain()
 
     monkeypatch.setattr(data_loader.yfinance, "Ticker", FakeTicker)
-    df = loader.load_option_chain(ticker="^SPX", n_maturities=2)
+    # wide day-window so selection isn't dependent on the run date; the ladder then
+    # spreads its picks across the expiries instead of taking the nearest ones.
+    df = loader.load_option_chain(ticker="^SPX", n_maturities=2,
+                                  min_days=0, max_days=100_000)
 
     # 2 expiries x {call, put} x 2 strikes = 8 rows
     assert len(df) == 8
     assert set(df["type"]) == {"call", "put"}
-    assert set(df["expiry"]) == {"2026-06-19", "2026-06-26"}
+    # even spread of 2 across 3 expiries -> first and last, not the nearest two
+    assert set(df["expiry"]) == {"2026-06-19", "2026-07-17"}
+    assert df["spot"].iloc[0] == 105.0

@@ -14,6 +14,7 @@ from numpyro.infer import MCMC, NUTS, init_to_value
 from scipy.optimize import brentq, least_squares
 from scipy.stats import norm
 
+from .heston_config import HestonCalibrationConfig
 from .heston_params import HestonParams
 
 jax.config.update("jax_enable_x64", True)
@@ -23,14 +24,9 @@ logger = getLogger()
 class HestonModel:
     """Heston model implementation with analytical solution."""
 
-    # Default fixed Gauss-Legendre grid for the public pricer. The JAX pricer
-    # is the single source of truth for both `characteristic_function` and
-    # `call`; these set the [0, u_max] quadrature resolution used to invert it.
-    _U_MAX: float = 200.0
-    _N_QUAD: int = 128
-
     def __init__(self,
-                 init_params: HestonParams) -> None:
+                 init_params: HestonParams,
+                 config: HestonCalibrationConfig | None = None) -> None:
         """Define initial Heston parameters.
 
         v_0 - initial variance
@@ -38,12 +34,16 @@ class HestonModel:
         a - the variance mean-reversion speed
         eta - the volatility of the variance process
         rho - correlation coefficient of Weiner processes
+
+        config bundles the quadrature/MSE/NUTS hyperparameters; defaults reproduce
+        the legacy behavior.
         """
         if(not init_params.feller()):
             msg: str = "Bad value of the params: Feller condition isnt satisfied."
             logger.warning(msg)
 
         self.params = init_params
+        self.config = config if config is not None else HestonCalibrationConfig()
 
     @staticmethod
     def _pack(params: HestonParams) -> jnp.ndarray:
@@ -77,7 +77,7 @@ class HestonModel:
         """Compute call prices (numpy-facing wrapper over the JAX pricer `_call_jax`).
 
         Inverts the characteristic function via fixed Gauss-Legendre quadrature on
-        [0, _U_MAX]; k, t are parallel quote arrays.
+        [0, config.quad.u_max]; k, t are parallel quote arrays.
 
         K - strike
         s_0 - initial price
@@ -85,7 +85,7 @@ class HestonModel:
         t - time/maturity
         """
         params = params if params is not None else self.params
-        nodes, weights = self._gauss_legendre(self._U_MAX, self._N_QUAD)
+        nodes, weights = self._gauss_legendre(self.config.quad.u_max, self.config.quad.n_quad)
         prices = self._call_jax(self._pack(params), jnp.atleast_1d(jnp.asarray(k)),
                                 s_0, r, jnp.atleast_1d(jnp.asarray(t)), nodes, weights)
 
@@ -116,8 +116,11 @@ class HestonModel:
         t - time/maturity
         call - actual option prices
         """
+        logger.info("Starting MSE optimization with initial params: %s", self.params)
         params = self.mse_optimizer(init_params=self.params, k=k, s_0=s_0, r=r, t=t, call=call)
+        logger.info("Starting NUTS optimization with initial params: %s", params)
         self.params = self.nuts_optimizer(init_params=params, k=k, s_0=s_0, r=r, t=t, call=call)
+        logger.info("Final calibrated params: %s", self.params)
 
 
     @staticmethod
@@ -220,9 +223,10 @@ class HestonModel:
             msg = "No valid quotes to calibrate on."
             raise ValueError(msg)
 
-        #          v_0    v_mean  a      eta    rho
-        lb = np.array([1e-4, 1e-4, 1e-2, 1e-2, -0.999])
-        ub = np.array([1.0,  1.0,  20.0, 5.0,   0.999])
+        cfg = self.config.mse
+        #         bounds are (low, high) per param in PARAM_ORDER (v_0, v_mean, a, eta, rho)
+        lb = np.array(cfg.lb())
+        ub = np.array(cfg.ub())
 
         def pack(p: HestonParams) -> np.ndarray:
             return np.array([p.v_0, p.v_mean, p.a, p.eta, p.rho])
@@ -236,10 +240,11 @@ class HestonModel:
             res = iv_model - iv_market
             # Degenerate trial params can price below intrinsic -> nan IV; turn
             # those into a large finite penalty so the solver steers away.
-            return np.nan_to_num(res, nan=1.0)
+            return np.nan_to_num(res, nan=cfg.nan_penalty)
 
         result = least_squares(residuals, x0, bounds=(lb, ub),
-                               method="trf", x_scale="jac", ftol=1e-8, xtol=1e-8)
+                               method=cfg.method, x_scale=cfg.x_scale,
+                               ftol=cfg.ftol, xtol=cfg.xtol)
 
         fitted = HestonParams(*result.x)
         logger.info("MSE calibration: cost=%.3e status=%d feller=%s",
@@ -323,11 +328,11 @@ class HestonModel:
                        r: float,
                        t: np.ndarray,
                        call: np.ndarray,
-                       num_warmup: int = 1000,
-                       num_samples: int = 1000,
-                       u_max: float = 200.0,
-                       n_quad: int = 128,
-                       seed: int = 0) -> HestonParams:
+                       num_warmup: int | None = None,
+                       num_samples: int | None = None,
+                       u_max: float | None = None,
+                       n_quad: int | None = None,
+                       seed: int | None = None) -> HestonParams:
         """Bayesian Heston calibration over the surface via numpyro NUTS.
 
         Warm-started at the MSE point estimate (init_params), with priors centred
@@ -337,8 +342,19 @@ class HestonModel:
         (brentq inversion is not differentiable). The full posterior is stored on
         self.posterior; the posterior mean is returned as the point estimate.
 
+        Sampling knobs (num_warmup, num_samples, u_max, n_quad, seed) fall back to
+        self.config when left as None; pass them explicitly to override per call.
+
         k, t, call - parallel surface arrays (one market quote per index).
         """
+        ncfg = self.config.nuts
+        qcfg = self.config.quad
+        num_warmup = ncfg.num_warmup if num_warmup is None else num_warmup
+        num_samples = ncfg.num_samples if num_samples is None else num_samples
+        seed = ncfg.seed if seed is None else seed
+        u_max = qcfg.u_max if u_max is None else u_max
+        n_quad = qcfg.n_quad if n_quad is None else n_quad
+
         k = np.asarray(k, dtype=float)
         t = np.asarray(t, dtype=float)
         call = np.asarray(call, dtype=float)
@@ -355,7 +371,7 @@ class HestonModel:
             msg = "No valid quotes to calibrate on."
             raise ValueError(msg)
 
-        vega = np.maximum(self._bs_vega(s_0, k, r, t, iv_market), 1e-4)
+        vega = np.maximum(self._bs_vega(s_0, k, r, t, iv_market), ncfg.vega_floor)
 
         nodes, weights = self._gauss_legendre(u_max, n_quad)
         k_j = jnp.asarray(k)
@@ -364,12 +380,13 @@ class HestonModel:
         vega_j = jnp.asarray(vega)
 
         def model() -> None:
-            v_0 = numpyro.sample("v_0", dist.LogNormal(np.log(init_params.v_0), 0.5))
-            v_mean = numpyro.sample("v_mean", dist.LogNormal(np.log(init_params.v_mean), 0.5))
-            a = numpyro.sample("a", dist.LogNormal(np.log(init_params.a), 0.5))
-            eta = numpyro.sample("eta", dist.LogNormal(np.log(init_params.eta), 0.5))
-            rho = numpyro.sample("rho", dist.Uniform(-0.999, 0.999))
-            sigma = numpyro.sample("sigma", dist.HalfNormal(0.05))
+            scale = ncfg.lognormal_scale
+            v_0 = numpyro.sample("v_0", dist.LogNormal(np.log(init_params.v_0), scale))
+            v_mean = numpyro.sample("v_mean", dist.LogNormal(np.log(init_params.v_mean), scale))
+            a = numpyro.sample("a", dist.LogNormal(np.log(init_params.a), scale))
+            eta = numpyro.sample("eta", dist.LogNormal(np.log(init_params.eta), scale))
+            rho = numpyro.sample("rho", dist.Uniform(ncfg.rho_low, ncfg.rho_high))
+            sigma = numpyro.sample("sigma", dist.HalfNormal(ncfg.sigma_halfnormal_scale))
 
             params_vec = jnp.stack([v_0, v_mean, a, eta, rho])
             prices = self._call_jax(params_vec, k_j, s_0, r, t_j, nodes, weights)
@@ -377,10 +394,10 @@ class HestonModel:
 
         init_vals = {"v_0": init_params.v_0, "v_mean": init_params.v_mean,
                      "a": init_params.a, "eta": init_params.eta,
-                     "rho": init_params.rho, "sigma": 0.02}
+                     "rho": init_params.rho, "sigma": ncfg.init_sigma}
         kernel = NUTS(model, init_strategy=init_to_value(values=init_vals))
         mcmc = MCMC(kernel, num_warmup=num_warmup, num_samples=num_samples,
-                    progress_bar=False, num_chains=4)
+                    progress_bar=False, num_chains=ncfg.num_chains)
         mcmc.run(jax.random.PRNGKey(seed))
 
         self.posterior = mcmc.get_samples()
