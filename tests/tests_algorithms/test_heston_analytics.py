@@ -54,6 +54,23 @@ def test_init_feller_violation_warns(caplog: pytest.LogCaptureFixture) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Characteristic function
+# --------------------------------------------------------------------------- #
+def test_characteristic_function_at_zero_is_one(pricer: HestonModel) -> None:
+    # phi(0) = E[e^{i*0*X}] = 1 for any characteristic function.
+    cf = pricer.characteristic_function(s_0=S_0, r=R, t=1.0, w=0.0)
+    assert abs(complex(cf) - 1.0) < 1e-8
+
+
+def test_characteristic_function_honours_explicit_params(pricer: HestonModel) -> None:
+    # a different vol-of-vol gives a different phi at a non-zero frequency.
+    other = HestonParams(v_0=0.04, v_mean=0.04, a=1.5, eta=0.6, rho=-0.6)
+    base = pricer.characteristic_function(S_0, R, 1.0, 0.5)
+    bumped = pricer.characteristic_function(S_0, R, 1.0, 0.5, params=other)
+    assert abs(complex(base) - complex(bumped)) > 1e-6
+
+
+# --------------------------------------------------------------------------- #
 # Analytical pricer
 # --------------------------------------------------------------------------- #
 def test_call_is_positive_and_decreasing_in_strike(pricer: HestonModel) -> None:
