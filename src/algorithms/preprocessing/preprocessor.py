@@ -18,7 +18,12 @@ from scipy.integrate import trapezoid
 from scipy.ndimage import gaussian_filter1d
 
 from ..black_scholes import bs_call, bs_vega, implied_vol
-from .preprocessing_config import LiquidityConfig, PreprocessConfig
+from .preprocessing_config import (
+    GRID_FIXED,
+    GRID_TRADED,
+    LiquidityConfig,
+    PreprocessConfig,
+)
 from .svi import SVIParams, fit_svi_slice
 
 logger = getLogger()
@@ -26,11 +31,19 @@ logger = getLogger()
 
 @dataclass
 class Marginal:
-    """Risk-neutral terminal density mu_T(K) for one maturity (Breeden-Litzenberger)."""
+    """Risk-neutral terminal density mu_T(K) for one maturity (Breeden-Litzenberger).
+
+    raw_mass is the density's integral over the grid BEFORE renormalisation. The grid spans the
+    traded strikes, not the whole real line, so some probability always falls outside it and
+    raw_mass < 1. Reporting it is what keeps the truncation honest: a raw_mass of 0.97 says 3%
+    of the risk-neutral mass lives beyond the strikes the market actually quotes, and any
+    statement about the tails of this density is extrapolation, not measurement.
+    """
 
     ttm: float
     strikes: np.ndarray
     density: np.ndarray
+    raw_mass: float = 1.0
 
     def mean(self) -> float:
         """E[S_T] under the density; should equal the forward for a martingale."""
@@ -198,22 +211,57 @@ class SurfacePreprocessor:
         return slices
 
     # ------------------------------------------------------------- marginals (BL)
-    def marginals(self, svi: list[SVIParams], r: float) -> list[Marginal]:
-        """Extract risk-neutral densities mu_T(K) = e^{rt} d^2C/dK^2 from the SVI smiles."""
+    def _bl_grid(self, smile: SVIParams, clean: pd.DataFrame | None) -> np.ndarray:
+        """Strike grid for one maturity's BL extraction.
+
+        In GRID_TRADED mode the grid spans the strikes that actually traded at this maturity,
+        so the density is read off the smile only where quotes constrain it. Running past the
+        last quote reads the density off SVI's extrapolated wing instead, which on real SPX
+        slices invents enough fake tail mass to push the forward-recovery error past 20%.
+        margin_sigma widens the range by that many ATM standard deviations if some controlled
+        extrapolation is wanted.
+        """
+        cfg = self.config.marginal
+        if cfg.grid_mode == GRID_FIXED:
+            return np.linspace(cfg.strike_lo * smile.forward, cfg.strike_hi * smile.forward,
+                               cfg.n_grid)
+        if clean is None:
+            msg = (f"grid_mode={GRID_TRADED!r} needs the cleaned surface to read the traded "
+                   f"strike range from; pass clean=, or use grid_mode={GRID_FIXED!r}.")
+            raise ValueError(msg)
+
+        group = clean[np.isclose(clean["ttm"], smile.t)]
+        k_lo = float(np.log(group["strike"].min() / smile.forward))
+        k_hi = float(np.log(group["strike"].max() / smile.forward))
+        if cfg.margin_sigma:
+            widen = cfg.margin_sigma * float(smile.implied_vol(smile.forward)) * np.sqrt(smile.t)
+            k_lo, k_hi = k_lo - widen, k_hi + widen
+
+        return smile.forward * np.exp(np.linspace(k_lo, k_hi, cfg.n_grid))
+
+    def marginals(self, svi: list[SVIParams], r: float,
+                  clean: pd.DataFrame | None = None) -> list[Marginal]:
+        """Extract risk-neutral densities mu_T(K) = e^{rt} d^2C/dK^2 from the SVI smiles.
+
+        `clean` supplies the traded strike range per maturity and is required under the default
+        GRID_TRADED grid mode (see _bl_grid and MarginalConfig for why the grid must not run
+        past the quotes).
+        """
         cfg = self.config.marginal
         out = []
         for sp in svi:
-            grid = np.linspace(cfg.strike_lo * sp.forward, cfg.strike_hi * sp.forward,
-                               cfg.n_grid)
+            grid = self._bl_grid(sp, clean)
             iv = np.maximum(sp.implied_vol(grid), 1e-8)        # floor avoids sigma=0 blowups
             call = bs_call(sp.forward, grid, sp.t, iv, r)
             density = np.exp(r * sp.t) * np.gradient(np.gradient(call, grid), grid)
             if cfg.kernel_bandwidth > 0:
                 density = gaussian_filter1d(density, cfg.kernel_bandwidth)
             density = np.clip(density, 0.0, None)
+
+            raw_mass = float(trapezoid(density, grid))
             if cfg.normalize:
-                density = density / trapezoid(density, grid)
-            out.append(Marginal(ttm=sp.t, strikes=grid, density=density))
+                density = density / raw_mass
+            out.append(Marginal(ttm=sp.t, strikes=grid, density=density, raw_mass=raw_mass))
 
         return out
 
@@ -222,6 +270,6 @@ class SurfacePreprocessor:
         """Full pipeline: clean -> fit SVI -> extract marginals."""
         clean = self.clean(chain, r)
         svi = self.fit_svi(clean)
-        margs = self.marginals(svi, r)
+        margs = self.marginals(svi, r, clean=clean)
 
         return PreparedSurface(clean=clean, svi=svi, marginals=margs)

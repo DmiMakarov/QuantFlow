@@ -54,15 +54,40 @@ class SVIConfig:
         return [hi for _, hi in self.bounds]
 
 
+GRID_TRADED = "traded"
+GRID_FIXED = "fixed"
+
+
 @dataclass
 class MarginalConfig:
-    """Breeden-Litzenberger extraction grid and smoothing settings."""
+    """Breeden-Litzenberger extraction grid and smoothing settings.
+
+    The grid width is the single most consequential choice here, and it is not obvious.
+
+    BL reads the density off the SVI smile's curvature, so wherever the grid runs past the last
+    traded strike the density is being read off *extrapolation*, not data. SVI's wings grow
+    linearly in total variance, and on real SPX slices the fitted right wing is steep enough
+    that extending the grid invents tail mass out of nothing. Because the mean weights by K,
+    that fake mass dominates: on the June-2026 chain, a grid running to 1.5F or 3F blows the
+    forward-recovery error out to +23-27% at the mid maturities, while a grid stopping at the
+    last traded strike holds it under 1% everywhere.
+
+    So the default is GRID_TRADED: per maturity, span exactly the strikes that actually traded
+    (optionally widened by margin_sigma ATM standard deviations). The extracted density is then
+    the risk-neutral density *conditional on the traded range*, renormalised -- and `raw_mass`
+    on each Marginal reports how much probability the range failed to capture, so the
+    truncation is stated rather than hidden.
+
+    GRID_FIXED restores the old fraction-of-forward grid via strike_lo/strike_hi. It is kept
+    for synthetic surfaces (where the smile IS the true model and extrapolating is safe), not
+    because it is a reasonable choice on market data.
+    """
 
     n_grid: int = 400              # number of strikes on the dense BL grid
-    strike_lo: float = 0.2         # grid lower bound as a fraction of the forward
-    strike_hi: float = 3.0         # grid upper bound as a fraction of the forward
-    # wide enough that the lognormal-ish tails carry negligible truncated mass, so the
-    # extracted density integrates to ~1 and recovers the forward as its mean.
+    grid_mode: str = GRID_TRADED
+    margin_sigma: float = 0.0      # traded mode: widen by margin_sigma * atm_iv * sqrt(t)
+    strike_lo: float = 0.2         # fixed mode only: bounds as a fraction of the forward
+    strike_hi: float = 3.0
     kernel_bandwidth: float = 0.0  # Gaussian smoothing sigma (in grid steps); 0 = off
     normalize: bool = True         # rescale density to integrate to 1
 

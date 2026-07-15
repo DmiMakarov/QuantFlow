@@ -38,12 +38,8 @@ dev = [
 [tool.uv]
 package = false            # research repo: flat lib/ modules, not an installable package
 
-[tool.ruff]
-line-length = 100
-target-version = "py311"
-
-[tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B"]   # pyflakes, pycodestyle, isort, pyupgrade, bugbear
+# Ruff is configured in ruff.toml, which takes precedence over any [tool.ruff] here.
+# Keeping a second, disagreeing copy in this file is what let 80 violations go unnoticed.
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

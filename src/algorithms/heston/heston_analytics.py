@@ -10,6 +10,8 @@ import jax.numpy as jnp
 import numpy as np
 import numpyro
 import numpyro.distributions as dist
+import pandas as pd
+from numpyro.diagnostics import summary
 from numpyro.infer import MCMC, NUTS, init_to_value
 from scipy.optimize import brentq, least_squares
 from scipy.stats import norm
@@ -44,6 +46,13 @@ class HestonModel:
 
         self.params = init_params
         self.config = config if config is not None else HestonCalibrationConfig()
+
+        # populated by nuts_optimizer; declared here so posterior_summary can fail loudly
+        # rather than tripping over a missing attribute.
+        self.mcmc: MCMC | None = None
+        self.posterior: dict | None = None
+        self.posterior_by_chain: dict | None = None
+        self.divergences: int | None = None
 
     @staticmethod
     def _pack(params: HestonParams) -> jnp.ndarray:
@@ -398,9 +407,18 @@ class HestonModel:
         kernel = NUTS(model, init_strategy=init_to_value(values=init_vals))
         mcmc = MCMC(kernel, num_warmup=num_warmup, num_samples=num_samples,
                     progress_bar=False, num_chains=ncfg.num_chains)
-        mcmc.run(jax.random.PRNGKey(seed))
+        # "diverging" is not collected unless asked for, and it is the single most
+        # informative failure signal the sampler produces -- see posterior_summary.
+        mcmc.run(jax.random.PRNGKey(seed), extra_fields=("diverging",))
 
+        self.mcmc = mcmc
         self.posterior = mcmc.get_samples()
+        # R-hat compares WITHIN- to BETWEEN-chain variance, so it needs the chain axis that
+        # the flat get_samples() above collapses. Keep both: the flat draws for posterior
+        # means, the grouped draws for diagnostics.
+        self.posterior_by_chain = mcmc.get_samples(group_by_chain=True)
+        self.divergences = int(np.asarray(mcmc.get_extra_fields()["diverging"]).sum())
+
         post_mean = HestonParams(
             v_0=float(jnp.mean(self.posterior["v_0"])),
             v_mean=float(jnp.mean(self.posterior["v_mean"])),
@@ -408,6 +426,57 @@ class HestonModel:
             eta=float(jnp.mean(self.posterior["eta"])),
             rho=float(jnp.mean(self.posterior["rho"])),
         )
-        logger.info("NUTS calibration: posterior mean feller=%s", post_mean.feller())
+        logger.info("NUTS calibration: posterior mean feller=%s divergences=%d",
+                    post_mean.feller(), self.divergences)
+        self._warn_on_divergences()
 
         return post_mean
+
+    def _warn_on_divergences(self) -> None:
+        """Warn if the sampler diverged.
+
+        A divergent transition means NUTS failed on the posterior's geometry, so the draws are
+        not from the target distribution and the posterior mean is not trustworthy -- however
+        healthy R-hat looks. Split out from nuts_optimizer so it is testable without betting on
+        the sampler actually diverging (whether it does is a property of the seed, which makes
+        for a flaky test).
+        """
+        if self.divergences:
+            logger.warning("NUTS: %d divergent transitions; the posterior mean is suspect.",
+                           self.divergences)
+
+    def posterior_summary(self, prob: float = 0.9) -> pd.DataFrame:
+        """Posterior diagnostics: mean, std, median, credible interval, ESS, R-hat.
+
+        Requires nuts_optimizer (or optimize_params) to have run. Without this table the
+        MCMC is indistinguishable from a point estimate: the posterior mean is only
+        meaningful if the chains actually mixed.
+
+        Rules of thumb: r_hat < 1.01, n_eff > 400 per parameter, divergences == 0. Any
+        divergence means the sampler failed on the posterior's geometry -- the returned
+        mean should not be trusted, whatever its R-hat says.
+
+        Returns one row per parameter (v_0, v_mean, a, eta, rho, sigma) with columns
+        mean, std, median, hpdi_low, hpdi_high, n_eff, r_hat. The divergence count is a
+        property of the run rather than of any parameter, so it rides on .attrs.
+        """
+        if self.posterior_by_chain is None:
+            msg = "No posterior: run nuts_optimizer (or optimize_params) first."
+            raise RuntimeError(msg)
+        if self.config.nuts.num_chains < 2:
+            # numpyro still reports an R-hat here: it splits the lone chain in half. That
+            # catches drift within the chain but is blind to a chain stuck in the wrong
+            # mode, which is exactly what R-hat is usually relied on to find.
+            logger.warning("num_chains=1: R-hat falls back to split-R-hat within a single "
+                           "chain and cannot detect between-chain non-convergence.")
+
+        stats = summary(self.posterior_by_chain, prob=prob, group_by_chain=True)
+        table = pd.DataFrame(stats).T
+        # numpyro names the interval columns after `prob` (e.g. "5.0%"/"95.0%"); rename so
+        # the schema is stable no matter what prob the caller passed.
+        lo, hi = f"{50 * (1 - prob):.1f}%", f"{50 * (1 + prob):.1f}%"
+        table = table.rename(columns={lo: "hpdi_low", hi: "hpdi_high"})
+        table = table[["mean", "std", "median", "hpdi_low", "hpdi_high", "n_eff", "r_hat"]]
+        table.attrs["divergences"] = self.divergences
+
+        return table

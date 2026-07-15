@@ -1,9 +1,14 @@
 """A class for loading data from various sources, such as CSV files, databases, or APIs."""
+from logging import getLogger
+
 import numpy as np
 import pandas as pd
+import pyarrow as pa
 import pyarrow.parquet as pq
 import requests
 import yfinance
+
+logger = getLogger()
 
 
 class DataLoader:
@@ -32,15 +37,49 @@ class DataLoader:
         return yfinance.download (tickers = tickers, start = start,
                                   end = end, interval = interval)
 
-    def load_spx(self, start: str, end: str, interval: str, path: str | None = None) -> pd.DataFrame:
-        """Load SPX data, firstly trying to find in path."""
+    @staticmethod
+    def _normalise_price_frame(df: pd.DataFrame) -> pd.DataFrame:
+        """Give a price frame one schema regardless of which branch produced it.
+
+        yfinance hands back MultiIndex (field, ticker) columns and a DatetimeIndex even for
+        a single ticker; a parquet round-trip hands back flat columns with the date demoted
+        to a plain Date column. Callers must not have to care which one they got, so both are
+        normalised to flat columns on a DatetimeIndex named Date. This is also what makes the
+        downloaded frame writable at all: to_parquet rejects MultiIndex columns outright.
+        """
+        out = df.copy()
+        if isinstance(out.columns, pd.MultiIndex):
+            # single-ticker download: level 1 is the (constant) ticker, so drop it
+            out.columns = out.columns.get_level_values(0)
+        out.columns.name = None
+        if "Date" in out.columns:
+            out = out.set_index("Date")
+        out.index = pd.to_datetime(out.index)
+        out.index.name = "Date"
+
+        return out
+
+    def load_spx(self, start: str, end: str, interval: str,
+                 path: str | None = None) -> pd.DataFrame:
+        """Load SPX history, preferring a parquet cache at `path` and writing it back on a miss.
+
+        A miss -- no file yet, or an unreadable/corrupt one -- falls back to yfinance and then
+        persists the download, so re-runs are reproducible offline. Only file-level read
+        failures are swallowed; anything else propagates rather than being silently masked
+        into a surprise network call.
+        """
         if path is not None:
             try:
-                return self.load_parquet(path)
-            except Exception:
-                pass
+                return self._normalise_price_frame(self.load_parquet(path))
+            except (OSError, pa.ArrowInvalid):
+                logger.info("SPX cache miss at %s; downloading from yfinance.", path)
 
-        return self.load_yfinance(tickers="^SPX", start=start, end=end, interval=interval)
+        data = self._normalise_price_frame(
+            self.load_yfinance(tickers="^SPX", start=start, end=end, interval=interval))
+        if path is not None:
+            self.save_parquet(data, path)
+
+        return data
 
     @staticmethod
     def _underlying_snapshot(option_chain: object) -> tuple[float, pd.Timestamp]:
@@ -75,7 +114,7 @@ class DataLoader:
         if len(eligible) <= n_maturities:
             return eligible
         idx = np.linspace(0, len(eligible) - 1, n_maturities)
-        picks = sorted({int(round(i)) for i in idx})
+        picks = sorted({round(i) for i in idx})
 
         return [eligible[i] for i in picks]
 

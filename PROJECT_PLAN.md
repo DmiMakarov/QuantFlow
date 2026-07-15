@@ -146,19 +146,33 @@ The first commit will be `git mv` of cleaned cells from these notebooks into `li
 
 **Critical scope discipline**: no Schrödinger bridges in v1. No joint SPX/VIX. No crypto. No productization. **No exceptions.** Adding these to v1 is what kills v1.
 
-#### Phase 1 — Data + classical baselines (~3-4 weeks)
+#### Phase 1 — Data + classical baselines (~3-4 weeks) — ✅ **COMPLETE**
 
-- ETL: pull SPX option chains via yfinance (free) and SPX time series. Cache with parquet.
-- Cleaning: no-arbitrage filters (butterfly + calendar), liquidity filters, wing extrapolation (SVI fit), Breeden–Litzenberger marginal extraction with kernel smoothing.
-- Heston calibration via MCMC, ported from HW4 P5; this is the v0 model.
-- Evaluation harness: surface RMSE, marginal Wasserstein distance, MC option pricing error.
+- ✅ ETL: pull SPX option chains via yfinance (free) and SPX time series. Cache with parquet.
+- ✅ Cleaning: no-arbitrage filters (butterfly + calendar), liquidity filters, wing extrapolation (SVI fit), Breeden–Litzenberger marginal extraction with kernel smoothing.
+- ✅ Heston calibration via MCMC, ported from HW4 P5; this is the v0 model.
+- ✅ Evaluation harness: surface RMSE, marginal Wasserstein distance, MC option pricing error.
 
-**Deliverables**: 
-- `notebooks/00_data_and_baseline.ipynb` — SPX surface plot, recovered marginals at 5 maturities
-- `notebooks/01_heston_mcmc.ipynb` — Heston calibrated to a recent SPX snapshot, with all benchmark numbers
-- `lib/data/`, `lib/eval/`
+**Deliverables**:
+- ✅ `notebooks/00_data_and_surface.ipynb` — SPX IV surface plot, recovered marginals at 5 maturities
+- ✅ `notebooks/01_heston_mcmc.ipynb` — Heston calibrated to a recent SPX snapshot, with all benchmark numbers
+- ✅ `src/data/`, `src/eval/` (the plan said `lib/`; see the §5 amendment)
 
-**Phase 1 exit criterion**: I can show a plot of the SPX implied vol surface, the recovered marginals, and a table of Heston calibration metrics. Done.
+**Phase 1 exit criterion**: I can show a plot of the SPX implied vol surface, the recovered marginals, and a table of Heston calibration metrics. **Done.**
+
+**Three things Phase 1 got wrong on the first pass, and what they cost.** Worth remembering, because
+each was silent — the code ran and produced plausible numbers either way:
+
+1. **The BL grid must stop at the last traded strike.** Beyond it, BL reads the density off SVI's
+   *extrapolated* wing, which invents tail mass; since `E[S_T] = ∫K μ(K) dK` weights by K, that fake
+   mass dominates. A grid to 1.5F or 3F gave a **+23–27%** forward-recovery error at mid maturities;
+   the traded-range grid gives **<1%**. These marginals are Phase 2's calibration target, so this
+   would have poisoned the next phase.
+2. **The Fourier pricer's `u_max` is strained by SHORT maturities, not long ones** (the CF decays
+   like `exp(-c·v·T·u²)`). The inherited `(u_max=200, n_quad=128)` carried a **0.63 absolute price
+   error at T=0.017** — inside the calibration objective. Now `(800, 256)`.
+3. **Held-out scoring changes the story.** In-sample IV RMSE was 0.84 vol points; on the held-out
+   wing it is **2.27**. Both are real; only the second is a forecast.
 
 #### Phase 2 — Flow matching neural SDE on SPX (~4-6 weeks)
 
@@ -256,35 +270,40 @@ The first commit will be `git mv` of cleaned cells from these notebooks into `li
 
 ## 5. Repo structure (evolves with releases)
 
-### v1.0 structure (simple)
+### v1.0 structure — AMENDED (Phase 1)
+
+> **This section is superseded by what was actually built.** The plan called for flat modules under
+> `lib/`. Two things killed that: `.gitignore` ignores `lib/` (the standard Python-template rule for
+> build output), and the code grew natural sub-groupings well before v4. It lives in `src/` as a
+> package tree. `CLAUDE.md` documents the real layout; the shape below is kept only to show intent.
 
 ```
 quantflow/
-├── README.md
 ├── PROJECT_PLAN.md                       # this document
-├── LICENSE                               # Apache-2.0
-├── requirements.txt                      # pip install -r requirements.txt
+├── pyproject.toml                        # uv-managed (NOT requirements.txt)
 ├── notebooks/
-│   ├── 00_data_and_baseline.ipynb        # Phase 1
+│   ├── 00_data_and_surface.ipynb         # Phase 1  (was 00_data_and_baseline)
 │   ├── 01_heston_mcmc.ipynb              # Phase 1
 │   ├── 02_flow_matching_warmup.ipynb     # Phase 2
 │   ├── 03_neural_sde_spx.ipynb           # Phase 2
 │   └── 04_deep_hedging.ipynb             # Phase 3
-├── lib/                                  # not a package yet, just modules
-│   ├── data.py                           # SPX ETL
-│   ├── arbitrage.py                      # no-arb filters, SVI, BL extraction
-│   ├── baselines.py                      # Heston, MCMC
-│   ├── sde.py                            # neural SDE
-│   ├── flow.py                           # flow matching
-│   ├── hedging.py                        # deep hedging
-│   └── eval.py                           # all metrics
+├── src/
+│   ├── data/                             # SPX ETL              (planned: lib/data.py)
+│   ├── algorithms/
+│   │   ├── black_scholes.py
+│   │   ├── preprocessing/                # no-arb filters, SVI, BL   (lib/arbitrage.py)
+│   │   └── heston/                       # Heston + MCMC + MC        (lib/baselines.py)
+│   │       # Phase 2 adds: sde.py (neural SDE), flow.py (flow matching)
+│   │       # Phase 3 adds: hedging.py
+│   └── eval/                             # all metrics          (planned: lib/eval.py)
 ├── data/                                 # gitignored
-├── results/                              # gitignored, MC outputs etc.
 └── reports/
     └── benchmark.md                      # numbers table
 ```
 
-No premature packaging. No empty directories waiting to be filled. Just modules that exist and work.
+**The one rule that matters:** `src/eval` never imports `src/algorithms`. §8's "every method is
+evaluated identically" only holds if the harness cannot see which model it is scoring — so models
+depend on the harness's `Paths` contract, never the reverse.
 
 ### v4.0 structure (mature)
 
@@ -302,7 +321,7 @@ Refactor to the full `src/quantflow/` package layout at v4.0, when the abstracti
 | Neural SDE | `torchsde` (Kidger et al.) | Only mature library with adjoint backprop |
 | Probabilistic | numpyro (NUTS) | Heston MCMC baseline |
 | Options data | yfinance (free), Deribit API (v4) | Free sources only for v1; paid CBOE if scope grows |
-| DataFrames | polars (primary), pandas (interop) | polars on time-series joins |
+| DataFrames | **pandas** | *Amended (Phase 1).* This originally said "polars primary, pandas interop". In practice the option-chain work is small-N, wide-column and sits directly on yfinance/pyarrow, both of which hand back pandas — so polars never earned its place and every module is pandas. Revisit only if a real time-series join bottleneck appears. |
 | Plotting | matplotlib + altair | static for paper, interactive for demo |
 | App | Streamlit (v4 only) | Skip until v4 |
 | Tests | pytest, hypothesis | property-based tests on SDE samplers |

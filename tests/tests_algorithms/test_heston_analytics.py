@@ -144,7 +144,7 @@ def test_implied_vol_above_spot_is_nan() -> None:
 
 
 def test_implied_vol_brentq_failure_is_nan(monkeypatch: pytest.MonkeyPatch) -> None:
-    def _boom(*_args, **_kwargs):  # noqa: ANN002, ANN003
+    def _boom(*_args, **_kwargs):
         raise ValueError("no bracket")
 
     monkeypatch.setattr(heston_analytics, "brentq", _boom)
@@ -258,6 +258,90 @@ def test_nuts_optimizer_all_invalid_raises() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# MCMC diagnostics
+# --------------------------------------------------------------------------- #
+def _tiny_nuts(cfg: HestonCalibrationConfig | None = None) -> HestonModel:
+    """Run the smallest NUTS that still produces a real posterior with a chain axis."""
+    k, t = _surface()
+    call = HestonModel(TRUE).call(k, S_0, R, t)
+    cal = HestonModel(TRUE, cfg)
+    cal.nuts_optimizer(TRUE, k, S_0, R, t, call, num_warmup=4, num_samples=4, n_quad=16)
+
+    return cal
+
+
+def test_posterior_summary_reports_rhat_ess_and_divergences() -> None:
+    cal = _tiny_nuts()
+    table = cal.posterior_summary()
+
+    assert set(table.index) == {"v_0", "v_mean", "a", "eta", "rho", "sigma"}
+    assert list(table.columns) == ["mean", "std", "median", "hpdi_low",
+                                   "hpdi_high", "n_eff", "r_hat"]
+    # the interval must bracket the median, and the divergence count rides on .attrs
+    assert (table["hpdi_low"] <= table["median"]).all()
+    assert (table["median"] <= table["hpdi_high"]).all()
+    assert isinstance(table.attrs["divergences"], int)
+
+
+def test_posterior_by_chain_keeps_the_axis_rhat_needs() -> None:
+    """The flat posterior collapses chains, which is why R-hat was unrecoverable before."""
+    cal = _tiny_nuts()
+    n_chains = NUTSConfig().num_chains
+
+    assert np.asarray(cal.posterior["v_0"]).shape == (n_chains * 4,)          # flat
+    assert np.asarray(cal.posterior_by_chain["v_0"]).shape == (n_chains, 4)   # grouped
+
+
+def test_posterior_summary_before_sampling_raises() -> None:
+    with pytest.raises(RuntimeError, match="run nuts_optimizer"):
+        HestonModel(TRUE).posterior_summary()
+
+
+def test_divergences_are_warned_about(caplog: pytest.LogCaptureFixture) -> None:
+    """A divergent transition means the draws are not from the target distribution, so the
+    posterior mean is untrustworthy however healthy R-hat looks. Whether a given seed actually
+    diverges is luck, so the warning is tested directly rather than by hoping it misbehaves."""
+    cal = HestonModel(TRUE)
+    cal.divergences = 7
+    with caplog.at_level(logging.WARNING):
+        cal._warn_on_divergences()
+    assert "7 divergent transitions" in caplog.text
+
+
+def test_no_divergences_no_warning(caplog: pytest.LogCaptureFixture) -> None:
+    cal = HestonModel(TRUE)
+    cal.divergences = 0
+    with caplog.at_level(logging.WARNING):
+        cal._warn_on_divergences()
+    assert "divergent" not in caplog.text
+
+
+def test_posterior_summary_warns_on_single_chain_rhat(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """One chain still yields a finite R-hat -- numpyro splits the chain in half -- but that
+    statistic cannot see a chain stuck in the wrong mode, so the caller must be told."""
+    cfg = HestonCalibrationConfig(nuts=NUTSConfig(num_chains=1))
+    cal = _tiny_nuts(cfg)
+    with caplog.at_level(logging.WARNING):
+        table = cal.posterior_summary()
+
+    assert "split-R-hat" in caplog.text
+    assert np.isfinite(table["r_hat"]).all()
+
+
+def test_posterior_summary_interval_columns_are_stable_across_prob() -> None:
+    """numpyro names its interval columns after `prob` ("5.0%"/"25.0%"/...); the table must
+    not change schema just because the caller asked for a different credible level."""
+    cal = _tiny_nuts()
+    wide, narrow = cal.posterior_summary(prob=0.9), cal.posterior_summary(prob=0.5)
+
+    assert list(wide.columns) == list(narrow.columns)
+    # the intervals themselves must still differ -- proves `prob` is actually being used
+    assert not np.allclose(wide["hpdi_low"], narrow["hpdi_low"])
+
+
+# --------------------------------------------------------------------------- #
 # optimize_params orchestration (mock the two stages -> fast)
 # --------------------------------------------------------------------------- #
 def test_optimize_params_runs_both_stages(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -266,11 +350,11 @@ def test_optimize_params_runs_both_stages(monkeypatch: pytest.MonkeyPatch) -> No
     nuts_out = HestonParams(v_0=0.03, v_mean=0.03, a=2.0, eta=0.25, rho=-0.7)
     calls = {}
 
-    def fake_mse(*, init_params, k, s_0, r, t, call):  # noqa: ANN001, ANN003
+    def fake_mse(*, init_params, k, s_0, r, t, call):
         calls["mse_init"] = init_params
         return mse_out
 
-    def fake_nuts(*, init_params, k, s_0, r, t, call):  # noqa: ANN001, ANN003
+    def fake_nuts(*, init_params, k, s_0, r, t, call):
         calls["nuts_init"] = init_params
         return nuts_out
 
@@ -287,14 +371,34 @@ def test_optimize_params_runs_both_stages(monkeypatch: pytest.MonkeyPatch) -> No
 # --------------------------------------------------------------------------- #
 # Calibration config
 # --------------------------------------------------------------------------- #
-def test_config_defaults_match_legacy() -> None:
-    # Defaults must reproduce the pre-refactor hardcoded literals exactly.
-    assert QuadConfig().u_max == 200.0
-    assert QuadConfig().n_quad == 128
+def test_config_defaults() -> None:
+    assert QuadConfig().u_max == 800.0
+    assert QuadConfig().n_quad == 256
     assert MSEConfig().lb() == [1e-4, 1e-4, 1e-2, 1e-2, -0.999]
     assert MSEConfig().ub() == [1.0, 1.0, 20.0, 5.0, 0.999]
     assert NUTSConfig().num_chains == 4
     assert NUTSConfig().lognormal_scale == 0.5
+
+
+def test_default_quadrature_is_converged_at_short_maturities() -> None:
+    """The inversion integral truncates at u_max, and the Heston CF decays like
+    exp(-c*v*t*u^2) -- so the SHORT end is what strains it, not the long end. The legacy
+    (200, 128) default carries a 0.63 absolute price error at T=0.017 on calibrated SPX
+    params, which flows straight into the calibration objective and then masquerades as model
+    error in any MC-vs-Fourier check. Pin the convergence, not the literal.
+    """
+    # a rough, Feller-violating slice, as real SPX calibrations produce
+    rough = HestonParams(v_0=0.02, v_mean=0.12, a=0.92, eta=0.97, rho=-0.73)
+    s_0 = 7500.0
+    k = np.array([0.9, 1.0, 1.1]) * s_0
+
+    gold = HestonModel(rough, HestonCalibrationConfig(quad=QuadConfig(u_max=3000, n_quad=2048)))
+    default = HestonModel(rough)
+
+    for ttm in (0.017, 0.14, 1.0):
+        t = np.full_like(k, ttm)
+        err = np.abs(default.call(k, s_0, R, t) - gold.call(k, s_0, R, t)).max()
+        assert err < 1e-3, f"T={ttm}: default quadrature is off by {err:.3g}"
 
 
 def test_custom_quad_flows_into_call() -> None:

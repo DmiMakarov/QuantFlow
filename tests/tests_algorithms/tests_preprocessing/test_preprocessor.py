@@ -173,15 +173,50 @@ def test_fit_svi_warns_on_arbitrage_violation(caplog: pytest.LogCaptureFixture) 
 
 
 # --------------------------------------------------------------------- marginals
-def test_marginals_are_valid_densities_recovering_the_forward() -> None:
+def test_marginals_are_valid_normalised_densities() -> None:
     pre = SurfacePreprocessor()
     surface = pre.prepare(make_chain(), r=0.0)
     assert len(surface.marginals) == len(surface.svi)
     for marg in surface.marginals:
         assert np.all(marg.density >= 0)
-        integral = np.trapezoid(marg.density, marg.strikes)
-        assert abs(integral - 1.0) < 1e-6           # normalised
-        assert abs(marg.mean() - 100.0) < 1.0        # martingale: E[S_T] ~= forward
+        assert abs(np.trapezoid(marg.density, marg.strikes) - 1.0) < 1e-6   # normalised
+
+
+def test_traded_grid_reports_the_mass_it_truncates() -> None:
+    """The default grid spans only the traded strikes, so the tails beyond them are not
+    captured. raw_mass says how much was missed, and the conditional mean is biased LOW by
+    roughly that truncation -- both are honest, and both must be visible rather than hidden."""
+    surface = SurfacePreprocessor().prepare(make_chain(maturities=(1.0,)), r=0.0)
+    marg = surface.marginals[0]
+
+    assert marg.raw_mass < 1.0                       # the synthetic chain trades only 70..130
+    assert marg.strikes[0] == pytest.approx(70.0)    # grid == traded range
+    assert marg.strikes[-1] == pytest.approx(130.0)
+    assert marg.mean() < 100.0                       # truncated upper tail -> mean pulled down
+
+
+def test_fixed_grid_recovers_the_forward_on_a_synthetic_smile() -> None:
+    """GRID_FIXED extrapolates past the quotes, which is safe HERE precisely because the
+    synthetic smile IS the true model -- so the forward comes back cleanly. On market data the
+    same setting reads SVI's unconstrained wing and blows the residual out; that asymmetry is
+    the whole reason GRID_TRADED is the default."""
+    cfg = PreprocessConfig(marginal=MarginalConfig(grid_mode="fixed",
+                                                   strike_lo=0.2, strike_hi=3.0))
+    surface = SurfacePreprocessor(cfg).prepare(make_chain(), r=0.0)
+
+    for marg in surface.marginals:
+        assert marg.raw_mass == pytest.approx(1.0, abs=1e-3)   # tails are captured
+        assert abs(marg.mean() - 100.0) < 1.0                  # martingale: E[S_T] == forward
+
+
+def test_margin_sigma_widens_the_traded_grid() -> None:
+    base = SurfacePreprocessor().prepare(make_chain(maturities=(1.0,)), r=0.0).marginals[0]
+    cfg = PreprocessConfig(marginal=MarginalConfig(margin_sigma=2.0))
+    wide = SurfacePreprocessor(cfg).prepare(make_chain(maturities=(1.0,)), r=0.0).marginals[0]
+
+    assert wide.strikes[0] < base.strikes[0]
+    assert wide.strikes[-1] > base.strikes[-1]
+    assert wide.raw_mass > base.raw_mass             # a wider grid captures more of the tails
 
 
 def test_marginals_with_kernel_smoothing() -> None:
@@ -190,18 +225,27 @@ def test_marginals_with_kernel_smoothing() -> None:
     surface = pre.prepare(make_chain(maturities=(0.5,)), r=0.0)
     marg = surface.marginals[0]
     assert np.all(np.isfinite(marg.density))
-    assert abs(marg.mean() - 100.0) < 1.5
+    assert np.all(marg.density >= 0)
 
 
 def test_marginals_without_normalisation() -> None:
     cfg = PreprocessConfig(marginal=MarginalConfig(normalize=False))
     pre = SurfacePreprocessor(cfg)
     clean = pre.clean(make_chain(maturities=(0.5,)), r=0.0)
-    marg = pre.marginals(pre.fit_svi(clean), r=0.0)[0]
-    # an un-normalised lognormal-ish density integrates to ~1 only by construction here,
-    # so just assert it is a finite, non-negative curve.
+    marg = pre.marginals(pre.fit_svi(clean), r=0.0, clean=clean)[0]
+    # un-normalised: the curve is a finite, non-negative density whose integral IS raw_mass.
     assert np.all(marg.density >= 0)
     assert np.all(np.isfinite(marg.density))
+    assert np.trapezoid(marg.density, marg.strikes) == pytest.approx(marg.raw_mass)
+
+
+def test_traded_grid_without_the_clean_surface_raises() -> None:
+    """The traded grid cannot be built from the SVI slices alone -- they carry no record of
+    which strikes actually traded. Failing loudly beats silently extrapolating."""
+    pre = SurfacePreprocessor()
+    clean = pre.clean(make_chain(maturities=(0.5,)), r=0.0)
+    with pytest.raises(ValueError, match="needs the cleaned surface"):
+        pre.marginals(pre.fit_svi(clean), r=0.0)
 
 
 # --------------------------------------------------------------------- end to end

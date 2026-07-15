@@ -61,38 +61,91 @@ def test_load_yfinance(loader: DataLoader, monkeypatch: pytest.MonkeyPatch) -> N
     assert out is sentinel
 
 
+def _downloaded_frame() -> pd.DataFrame:
+    """What yfinance.download actually returns: MultiIndex (field, ticker) cols + DatetimeIndex."""
+    idx = pd.DatetimeIndex(["2024-01-02", "2024-01-03"], name="Date")
+    cols = pd.MultiIndex.from_product([["Close", "Open"], ["^SPX"]])
+
+    return pd.DataFrame([[100.0, 99.0], [101.0, 100.5]], index=idx, columns=cols)
+
+
+def _cached_frame() -> pd.DataFrame:
+    """What the parquet round-trip returns: flat cols, date demoted to a Date column."""
+    return pd.DataFrame({"Close": [100.0, 101.0], "Open": [99.0, 100.5],
+                         "Date": pd.to_datetime(["2024-01-02", "2024-01-03"])})
+
+
 def test_load_spx_uses_cache_when_path_hits(
     loader: DataLoader, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    cached = pd.DataFrame({"cached": [1]})
-    monkeypatch.setattr(data_loader.pq, "read_table", lambda p: _FakeTable(cached))
+    monkeypatch.setattr(data_loader.pq, "read_table", lambda p: _FakeTable(_cached_frame()))
     # yfinance must NOT be called on a cache hit
     monkeypatch.setattr(data_loader.yfinance, "download",
                         lambda **kwargs: pytest.fail("network hit on cache"))
     out = loader.load_spx("2024-01-01", "2024-02-01", "1d", path="cache.parquet")
-    assert out is cached
+    assert list(out.columns) == ["Close", "Open"]
+    assert out.index.name == "Date"
 
 
-def test_load_spx_falls_back_when_cache_raises(
+def test_load_spx_writes_cache_back_on_miss(
     loader: DataLoader, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """The bug this fixes: load_spx read the cache but never populated it, so a miss
+    stayed a miss forever and every run hit the network."""
     def _raise(_p: str) -> pd.DataFrame:
         raise FileNotFoundError
 
-    downloaded = pd.DataFrame({"net": [1]})
+    saved: dict[str, object] = {}
     monkeypatch.setattr(data_loader.pq, "read_table", _raise)
-    monkeypatch.setattr(data_loader.yfinance, "download", lambda **kwargs: downloaded)
+    monkeypatch.setattr(data_loader.yfinance, "download", lambda **kwargs: _downloaded_frame())
+    monkeypatch.setattr(DataLoader, "save_parquet",
+                        staticmethod(lambda df, p: saved.update(df=df, path=p)))
     out = loader.load_spx("2024-01-01", "2024-02-01", "1d", path="missing.parquet")
-    assert out is downloaded
+
+    assert saved["path"] == "missing.parquet"
+    # what gets written is the NORMALISED frame -- to_parquet rejects MultiIndex columns
+    assert not isinstance(saved["df"].columns, pd.MultiIndex)
+    assert list(out.columns) == ["Close", "Open"]
+
+
+def test_load_spx_cache_hit_and_miss_agree_on_schema(
+    loader: DataLoader, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The two branches used to return different schemas (MultiIndex+DatetimeIndex vs
+    flat+Date-column), so downstream code silently broke depending on cache state."""
+    monkeypatch.setattr(data_loader.pq, "read_table", lambda p: _FakeTable(_cached_frame()))
+    hit = loader.load_spx("2024-01-01", "2024-02-01", "1d", path="cache.parquet")
+
+    monkeypatch.setattr(data_loader.yfinance, "download", lambda **kwargs: _downloaded_frame())
+    monkeypatch.setattr(DataLoader, "save_parquet", staticmethod(lambda df, p: None))
+    miss = loader.load_spx("2024-01-01", "2024-02-01", "1d")
+
+    assert list(hit.columns) == list(miss.columns)
+    assert hit.index.name == miss.index.name
+    assert hit.index.dtype == miss.index.dtype
+    pd.testing.assert_frame_equal(hit, miss)
+
+
+def test_load_spx_propagates_unexpected_cache_errors(
+    loader: DataLoader, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A corrupt-parquet OSError is a cache miss; a KeyError is a bug and must not be
+    silently masked into a surprise network download (the old bare `except Exception`)."""
+    def _raise(_p: str) -> pd.DataFrame:
+        raise KeyError("schema")
+
+    monkeypatch.setattr(data_loader.pq, "read_table", _raise)
+    with pytest.raises(KeyError):
+        loader.load_spx("2024-01-01", "2024-02-01", "1d", path="corrupt.parquet")
 
 
 def test_load_spx_no_path_goes_to_network(
     loader: DataLoader, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    downloaded = pd.DataFrame({"net": [1]})
-    monkeypatch.setattr(data_loader.yfinance, "download", lambda **kwargs: downloaded)
+    monkeypatch.setattr(data_loader.yfinance, "download", lambda **kwargs: _downloaded_frame())
     out = loader.load_spx("2024-01-01", "2024-02-01", "1d")
-    assert out is downloaded
+    assert list(out.columns) == ["Close", "Open"]
+    assert len(out) == 2
 
 
 def test_load_option_chain(loader: DataLoader, monkeypatch: pytest.MonkeyPatch) -> None:
