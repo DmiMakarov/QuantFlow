@@ -4,7 +4,7 @@ Generative market models for option-chain calibration and deep hedging, on equit
 and crypto (BTC/ETH).
 
 The goal is a **generative model of arbitrage-consistent market dynamics** — calibrated to real
-option chains via flow matching and (later) Schrödinger bridges, with **deep hedging** as the
+option chains — first as a neural local-stochastic-volatility model, then via Schrödinger bridges — with **deep hedging** as the
 downstream evaluation. `PROJECT_PLAN.md` is the design doc.
 
 ## Status
@@ -22,7 +22,7 @@ harness that everything else will be measured through are all in place.
 
 Results accumulate in [`reports/benchmark.md`](reports/benchmark.md).
 
-Next: Phase 2 — a flow-matching neural SDE, scored through the same harness, in the same table.
+Next: Phase 2 — a Dupire local-vol baseline and a neural local-stochastic-volatility model, scored through the same harness, in the same table.
 
 ## Quickstart
 

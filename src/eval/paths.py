@@ -2,7 +2,7 @@
 
 PROJECT_PLAN.md §8's cardinal rule is that every method is evaluated identically. That only
 holds if the evaluation code cannot tell which model produced the paths it is scoring -- so
-models do not hand `eval` a Heston object or a torchsde object, they hand it a `Paths`.
+models do not hand `eval` a Heston object or a torch model, they hand it a `Paths`.
 
 Deliberately numpy-only and dependency-free: `src/algorithms/heston/heston_mc.py` imports it
 today and Phase 2's neural SDE will import it too, so it must be cheap to depend on. Note the

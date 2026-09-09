@@ -11,15 +11,13 @@ authors = [{ name = "Dmitry", email = "dimanvseok@gmail.com" }]
 dependencies = [
     "numpy>=1.26",
     "jax>=0.4",            # vectorized SDE simulation + samplers (numpyro is jax-native)
-    "torch>=2.2",          # primary DL framework
-    "torchsde>=0.2.6",     # neural SDE with adjoint backprop (PyTorch-only)
+    "torch>=2.2",          # primary DL framework (hand-written Euler; no torchsde)
     "numpyro>=0.15",       # NUTS sampler for Heston MCMC baseline
     "yfinance>=0.2.40",    # free SPX option-chain ETL
-    "polars>=1.0",         # primary DataFrame lib (time-series joins)
-    "pandas>=2.2",         # interop only
+    "requests>=2.31",      # DataLoader.load_api
+    "pandas>=2.2",         # the DataFrame lib (pandas, not polars — see CLAUDE.md)
     "pyarrow>=16.0",
     "matplotlib>=3.8",     # static figures
-    "altair>=5.3",         # interactive figures
     "scipy>=1.17.1",
 ]
 
@@ -36,7 +34,7 @@ dev = [
 ]
 
 [tool.uv]
-package = false            # research repo: flat lib/ modules, not an installable package
+package = false            # research repo: src/ package tree, not an installable package (until v4)
 
 # Ruff is configured in ruff.toml, which takes precedence over any [tool.ruff] here.
 # Keeping a second, disagreeing copy in this file is what let 80 violations go unnoticed.
@@ -56,4 +54,4 @@ fail_under = 100
 
 [tool.mypy]
 python_version = "3.11"
-ignore_missing_imports = true         # torchsde/yfinance ship no stubs
+ignore_missing_imports = true         # yfinance ships no stubs
