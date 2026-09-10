@@ -14,7 +14,7 @@ harness that everything else will be measured through are all in place.
 
 | | |
 |---|---|
-| **Data** | SPX option chains + price series via yfinance, cached as parquet |
+| **Data** | SPX option chains + price series via yfinance, cached as parquet ([schema](docs/DATA.md)) |
 | **Surface** | liquidity filters, Carr–Madan butterfly + calendar no-arbitrage filters, raw-SVI smile fit, Breeden–Litzenberger risk-neutral marginals |
 | **Baseline** | Heston, calibrated by least-squares → **numpyro NUTS**, with full posterior diagnostics (R-hat, ESS, divergences) |
 | **Simulator** | Heston Monte Carlo (**Andersen QE**), validated against the exact Fourier pricer |
@@ -50,7 +50,11 @@ src/
 └── eval/          # the shared harness: Paths, surface, metrics, benchmark, plots
 notebooks/         # the narrative
 reports/           # benchmark.csv (store) + benchmark.md (deliverable)
+docs/DATA.md       # what is in the parquets, column by column
 ```
+
+[`docs/DATA.md`](docs/DATA.md) is the data reference: the parquet schemas, the maturity ladder,
+and what preprocessing turns the raw chain into.
 
 `src/eval` never imports `src/algorithms`: the harness must not be able to tell which model produced
 the numbers it is scoring. Models depend on its `Paths` contract, not the other way round.

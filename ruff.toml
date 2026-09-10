@@ -30,3 +30,7 @@ ignore = [
     "S101", "ANN", "D", "PLR2004", "SLF001", "ARG001", "ARG002", "ARG005",
     "INP001", "FBT001", "EM101", "TRY003", "PLC0415", "ICN001",
 ]
+
+# A standalone entry point, run as a file rather than imported, so it has no __init__.py
+# (INP001) and reports progress to a logger the caller reads on stdout.
+"scripts/**" = ["INP001"]
