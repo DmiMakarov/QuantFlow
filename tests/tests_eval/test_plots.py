@@ -14,15 +14,27 @@ import matplotlib.pyplot as plt
 
 from src.algorithms.preprocessing.preprocessor import Marginal
 from src.algorithms.preprocessing.svi import SVIParams
+from src.eval.paths import Paths
 from src.eval.plots import (
+    _empirical_density,
     plot_iv_surface,
     plot_marginals,
+    plot_mc_prices,
+    plot_paths_density,
     plot_posterior,
     plot_smile_fit,
     plot_smiles,
 )
 
 FORWARD = 100.0
+
+
+def _bar_span(ax) -> float:
+    """Total vertical extent of every error bar drawn on the axis."""
+    segments = [seg for container in ax.containers
+                for seg in container.lines[2][0].get_segments()]
+
+    return float(sum(seg[:, 1].max() - seg[:, 1].min() for seg in segments))
 
 
 @pytest.fixture(autouse=True)
@@ -128,3 +140,101 @@ def test_plots_draw_into_a_caller_supplied_axis(clean, svi) -> None:
     assert left.figure is fig
     assert right.figure is fig
     assert len(left.lines) == 2
+
+
+@pytest.fixture
+def paths() -> Paths:
+    """A small GBM-ish bundle: enough spread for the histogram, cheap enough to draw."""
+    rng = np.random.default_rng(0)
+    times = np.linspace(0.0, 1.0, 13)
+    shocks = rng.normal(scale=0.2 * np.sqrt(times[1]), size=(64, times.size - 1))
+    spot = FORWARD * np.exp(np.cumsum(np.hstack([np.zeros((64, 1)), shocks]), axis=1))
+
+    variance = 0.04 * np.exp(rng.normal(scale=0.3, size=spot.shape))
+
+    return Paths(times=times, spot=spot, variance=variance, r=0.01)
+
+
+def test_paths_density_draws_the_image_and_the_shown_trajectories(paths) -> None:
+    ax = plot_paths_density(paths, n_show=5).axes[0]
+
+    assert len(ax.images) == 1            # the density heatmap
+    assert len(ax.lines) == 5             # one red path each
+    assert ax.get_ylabel().startswith("t")
+    bottom, top = ax.get_ylim()
+    assert bottom < top                   # t increases upward, as in the OU picture
+    assert np.isclose(top, paths.times[-1])
+
+
+def test_paths_density_caps_n_show_at_the_number_of_paths(paths) -> None:
+    ax = plot_paths_density(paths, n_show=1000).axes[0]
+    assert len(ax.lines) == paths.n_paths
+
+
+def test_paths_density_can_draw_the_variance(paths) -> None:
+    fig = plot_paths_density(paths, kind="variance")
+    assert fig.axes[0].get_xlabel() == "v_t"
+
+
+def test_paths_density_refuses_variance_that_was_not_stored(paths) -> None:
+    dropped = Paths(times=paths.times, spot=paths.spot, variance=None, r=paths.r)
+    with pytest.raises(ValueError, match="no variance"):
+        plot_paths_density(dropped, kind="variance")
+
+
+def test_paths_density_rejects_an_unknown_kind(paths) -> None:
+    with pytest.raises(ValueError, match="Unknown kind"):
+        plot_paths_density(paths, kind="volatility")
+
+
+def test_paths_density_rows_integrate_to_the_fraction_still_in_frame(paths) -> None:
+    """Rows must NOT be renormalised to the visible window: a slice that has diffused half its
+    mass off-frame has to look half as bright, or the picture hides its own truncation."""
+    edges = np.linspace(80.0, 120.0, 41)
+    density = _empirical_density(paths.spot, edges)
+    inside = np.array([((col >= edges[0]) & (col <= edges[-1])).mean() for col in paths.spot.T])
+
+    assert np.allclose(density.sum(axis=1) * np.diff(edges)[0], inside, atol=1e-12)
+
+
+def test_mc_prices_draw_prices_over_their_standardised_residual(clean) -> None:
+    reference = np.linspace(5.0, 15.0, len(clean))
+    mc_price = reference + 0.05
+    mc_stderr = np.full(len(clean), 0.02)
+
+    upper, lower = plot_mc_prices(clean, mc_price, mc_stderr, reference).axes
+
+    assert upper.get_yscale() == "log"
+    assert "exact pricer" in upper.get_title()
+    assert lower.get_ylabel().startswith("z")
+
+
+def test_mc_prices_residual_panel_shows_the_z_score(clean) -> None:
+    """The lower panel is the only part that can reveal a bias, so it must plot mc-vs-ref in
+    standard errors -- not the raw gap, which is unreadable across four decades of price."""
+    reference = np.full(len(clean), 10.0)
+    mc_stderr = np.full(len(clean), 0.25)
+    mc_price = reference + 0.5                      # exactly 2 standard errors high
+
+    lower = plot_mc_prices(clean, mc_price, mc_stderr, reference).axes[1]
+    drawn = np.concatenate([line.get_ydata() for line in lower.lines
+                            if len(line.get_ydata()) == len(clean) // 2])
+
+    assert np.allclose(drawn, 2.0)
+
+
+def test_mc_prices_error_bars_scale_with_n_sigma(clean) -> None:
+    reference = np.full(len(clean), 10.0)
+    stderr = np.full(len(clean), 0.5)
+
+    narrow = plot_mc_prices(clean, reference, stderr, reference, n_sigma=1.0).axes[0]
+    wide = plot_mc_prices(clean, reference, stderr, reference, n_sigma=3.0).axes[0]
+
+    assert _bar_span(wide) > _bar_span(narrow)
+
+
+def test_mc_prices_refuses_a_single_axis(clean) -> None:
+    _, ax = plt.subplots()
+    with pytest.raises(ValueError, match="cannot draw into one axis"):
+        plot_mc_prices(clean, np.ones(len(clean)), np.ones(len(clean)),
+                       np.ones(len(clean)), ax=ax)

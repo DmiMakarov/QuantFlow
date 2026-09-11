@@ -10,4 +10,4 @@ in-sample residual — the noise floor a model is not expected to beat.
 
 | model | snapshot | n_quotes | iv_rmse_train | iv_rmse_test | price_rmse | svi_iv_rmse | w1_rel_mean | mc_price_rmse | mc_price_z_max | martingale_rel_max | feller | r_hat_max | ess_min | divergences | run | notes |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| heston-nuts | 2026-06-16 | 690 | 0.0084 | 0.0266 | 17.976 | 0.0052 | 0.01377 | 1.0927 | 1.90 | 0.00049 | False | 1.003 | 537 | 0 |  | QE MC 100k paths; wings held out per maturity |
+| heston-nuts | 2026-06-16 | 690 | 0.0084 | 0.0266 | 18.047 | 0.0052 | 0.01376 | 1.0611 | 1.96 | 0.00047 | False | 1.007 | 525 | 0 |  | QE MC 100k paths; wings held out per maturity |
