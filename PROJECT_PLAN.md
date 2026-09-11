@@ -314,7 +314,7 @@ Prerequisite: per-expiry forwards from put-call parity (Phase 1 lesson 4).
 > **This section is superseded by what was actually built.** The plan called for flat modules under
 > `lib/`. Two things killed that: `.gitignore` ignores `lib/` (the standard Python-template rule for
 > build output), and the code grew natural sub-groupings well before v4. It lives in `src/` as a
-> package tree. `CLAUDE.md` documents the real layout.
+> package tree. 
 
 ```
 quantflow/
@@ -564,7 +564,7 @@ In this order, each step gated by `uv run pytest` (100% coverage) and `uv run ru
 3. **Local-vol Monte Carlo** → `Paths`; `notebooks/02_local_vol.ipynb`; row `dupire-lv`.
 4. **Neural LSV model and torch simulator** → `Paths`; seam test against the Heston Euler; hypothesis drift-pinning test.
 5. **Loss and training loop**; torch pricer must equal `mc_call_prices` to round-off.
-6. **`notebooks/03_neural_lsv_spx.ipynb`**; row `neural-lsv`; forward-smile figure with all three models. Update README and CLAUDE.md.
+6. **`notebooks/03_neural_lsv_spx.ipynb`**; row `neural-lsv`; forward-smile figure with all three models. Update README.
 
 In parallel, at zero cost: start the daily option-chain snapshot pull (§7).
 

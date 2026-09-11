@@ -84,7 +84,7 @@ The frozen snapshot's ladder:
 | 2027-06-17 | 409 | 1.0005 | 200 – 11400 |
 
 Split 1 186 calls / 1 485 puts. Note the very short front maturity (0.0169 ≈ 6 days) — that is the
-slice that strains the Fourier pricer's `u_max`, see CLAUDE.md.
+slice that strains the Fourier pricer's `u_max`.
 
 ## Price schema
 
@@ -166,4 +166,4 @@ the true model and extrapolating is safe.
 
 Model *output* — as opposed to market data — travels as `src/eval/paths.py:Paths`
 (`times`, `spot`, `variance`, `r`), numpy-only and deliberately model-agnostic. That is the
-contract the evaluation harness scores; see CLAUDE.md's architectural rule.
+contract the evaluation harness scores.
