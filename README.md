@@ -1,11 +1,11 @@
 # QuantFlow
 
-Generative market models for option-chain calibration and deep hedging, on equity index (SPX/VIX)
-and crypto (BTC/ETH).
+Calibrating stochastic-volatility models to real SPX option chains, with a shared evaluation
+harness that scores every model on the same held-out data.
 
-The goal is a **generative model of arbitrage-consistent market dynamics** — calibrated to real
-option chains — first as a neural local-stochastic-volatility model, then via Schrödinger bridges — with **deep hedging** as the
-downstream evaluation. `PROJECT_PLAN.md` is the design doc.
+The project builds up a **generative model of arbitrage-consistent market dynamics**, calibrated
+to real option chains, one baseline at a time. Each model is fitted, simulated, and scored through
+the same harness so results stay comparable across phases. `PROJECT_PLAN.md` is the design doc.
 
 ## Status
 
@@ -22,7 +22,7 @@ harness that everything else will be measured through are all in place.
 
 Results accumulate in [`reports/benchmark.md`](reports/benchmark.md).
 
-Next: Phase 2 — a Dupire local-vol baseline and a neural local-stochastic-volatility model, scored through the same harness, in the same table.
+Next: Phase 2 — a Dupire local-vol baseline, scored through the same harness, in the same table.
 
 ## Quickstart
 
@@ -58,6 +58,18 @@ and what preprocessing turns the raw chain into.
 
 `src/eval` never imports `src/algorithms`: the harness must not be able to tell which model produced
 the numbers it is scoring. Models depend on its `Paths` contract, not the other way round.
+
+## Roadmap
+
+Beyond the classical baselines, the plan is to move towards learned market models and a
+hedging-based evaluation:
+
+- **Neural local-stochastic-volatility** — a learned leverage function on top of the Heston /
+  Dupire baselines, calibrated to the same chains.
+- **Schrödinger bridges** — generative dynamics constrained to the recovered risk-neutral marginals.
+- **Deep hedging** — a downstream evaluation: P&L of a learned hedge under each model's paths.
+- **More underlyings** — VIX, and crypto (BTC/ETH) option chains, once the harness has been
+  exercised on SPX.
 
 ## License
 

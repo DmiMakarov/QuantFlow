@@ -1,7 +1,7 @@
 [project]
 name = "quantflow"
 version = "0.1.0"
-description = "Generative market models for option-chain calibration and deep hedging (SPX/VIX, BTC/ETH)."
+description = "Stochastic-volatility models calibrated to SPX option chains, with a shared evaluation harness."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
